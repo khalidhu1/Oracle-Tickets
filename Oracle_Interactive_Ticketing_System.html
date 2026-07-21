@@ -1,0 +1,1631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oracle Support Ticketing System - Interactive</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons@latest/tabler-icons.css">
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.10.0/Recharts.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+            background: #f9fafb;
+            overflow: hidden;
+        }
+
+        html, body, #root {
+            height: 100%;
+            width: 100%;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes slideInRight {
+            from { opacity: 0; transform: translateX(100px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        input:focus, select:focus, textarea:focus {
+            border-color: #3b82f6 !important;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1) !important;
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // ============================================================
+        // CONFIG - edit these values for your deployment
+        // ============================================================
+
+        // Support/admin sign-in PIN. Anyone who selects "Support" mode
+        // must enter this PIN before they get access to every ticket.
+        // NOTE: this is a static front-end file with no server, so this
+        // PIN is only a soft deterrent (it's readable in page source /
+        // devtools by anyone determined enough) - it is NOT a substitute
+        // for real authentication. If you need real access control, put
+        // this behind a proper login/backend.
+        const SUPPORT_ADMIN_PIN = 'abc123';
+
+        // IT/support team address that gets notified of every new ticket.
+        const IT_SUPPORT_EMAIL = 'it@karandaaz.com.pk';
+
+        // EmailJS (https://www.emailjs.com) lets a static page like this
+        // send real emails without a backend. Create a free account, add
+        // an Email Service and two templates, then fill these in:
+        //   - EMAILJS_SERVICE_ID: from Email Services
+        //   - EMAILJS_TEMPLATE_ID: a template with variables
+        //       {{to_email}} {{ticket_id}} {{subject}} {{requester_name}}
+        //       {{priority}} {{category}} {{module}} {{description}}
+        //   - EMAILJS_PUBLIC_KEY: from Account > General
+        // Until these are filled in, the app falls back to opening a
+        // pre-filled email in the user's own mail client instead.
+        const EMAILJS_SERVICE_ID = 'YOUR_SERVICE_ID';
+        const EMAILJS_TEMPLATE_ID = 'YOUR_TEMPLATE_ID';
+        const EMAILJS_PUBLIC_KEY = 'YOUR_PUBLIC_KEY';
+
+        const EMAILJS_CONFIGURED = ![EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, EMAILJS_PUBLIC_KEY]
+            .some(v => !v || v.startsWith('YOUR_'));
+
+        if (EMAILJS_CONFIGURED && window.emailjs) {
+            window.emailjs.init(EMAILJS_PUBLIC_KEY);
+        }
+
+        // Sends a "new ticket" notification to the IT team and a
+        // confirmation to the person who filed it. Uses EmailJS if it's
+        // configured above; otherwise falls back to opening mailto: links
+        // so something still reaches both inboxes via the user's own
+        // mail client.
+        const sendTicketNotifications = (ticket) => {
+            const templateParams = (toEmail, isSupportCopy) => ({
+                to_email: toEmail,
+                ticket_id: ticket.id,
+                subject: ticket.subject,
+                requester_name: ticket.requesterName,
+                requester_email: ticket.email,
+                priority: ticket.priority,
+                category: ticket.category,
+                module: ticket.module,
+                department: ticket.department,
+                description: ticket.description,
+                message: isSupportCopy
+                    ? `New ${ticket.priority} priority ticket ${ticket.id} filed by ${ticket.requesterName} (${ticket.email}): ${ticket.subject}`
+                    : `Hi ${ticket.requesterName}, your ticket ${ticket.id} ("${ticket.subject}") has been received and is now Open. We'll follow up soon.`
+            });
+
+            if (EMAILJS_CONFIGURED && window.emailjs) {
+                window.emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, templateParams(IT_SUPPORT_EMAIL, true))
+                    .catch(err => console.error('EmailJS (IT notify) failed:', err));
+                window.emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, templateParams(ticket.email, false))
+                    .catch(err => console.error('EmailJS (submitter confirm) failed:', err));
+                return 'sent';
+            }
+
+            // Fallback: open a pre-filled email for the IT team. We only
+            // auto-open one mailto (browsers block multiple popups), and
+            // the ticket detail view always shows the submitter's email
+            // for support to reply to directly.
+            const mailBody = templateParams(IT_SUPPORT_EMAIL, true).message;
+            const mailto = `mailto:${IT_SUPPORT_EMAIL}?subject=${encodeURIComponent('New Ticket ' + ticket.id + ': ' + ticket.subject)}&body=${encodeURIComponent(mailBody + '\n\nReply-to submitter: ' + ticket.email)}`;
+            window.open(mailto, '_blank');
+            return 'fallback';
+        };
+
+        function AdvancedTicketingSystem() {
+            const [userMode, setUserMode] = useState('user');
+            const [tickets, setTickets] = useState([]);
+            const [selectedTicket, setSelectedTicket] = useState(null);
+            const [showCreateForm, setShowCreateForm] = useState(false);
+            const [filteredTickets, setFilteredTickets] = useState([]);
+            const [activeFilter, setActiveFilter] = useState('all');
+            const [searchTerm, setSearchTerm] = useState('');
+            const [sortBy, setSortBy] = useState('recent');
+            const [notificationCount, setNotificationCount] = useState(0);
+            const [formStep, setFormStep] = useState(1);
+            const [formError, setFormError] = useState('');
+            const [notifyBanner, setNotifyBanner] = useState('');
+
+            // Support/admin PIN gate. Unlock is remembered only for this
+            // browser tab's session (sessionStorage), so a fresh browser
+            // session - or switching users - requires the PIN again.
+            const [supportUnlocked, setSupportUnlocked] = useState(false);
+            const [showPinPrompt, setShowPinPrompt] = useState(false);
+            const [pinDraft, setPinDraft] = useState('');
+            const [pinError, setPinError] = useState('');
+
+            useEffect(() => {
+                if (sessionStorage.getItem('supportUnlocked') === 'true') {
+                    setSupportUnlocked(true);
+                }
+            }, []);
+
+            const handleModeSelect = (mode) => {
+                if (mode === 'support' && !supportUnlocked) {
+                    setPinDraft('');
+                    setPinError('');
+                    setShowPinPrompt(true);
+                    return;
+                }
+                setUserMode(mode);
+                setSelectedTicket(null);
+                setShowCreateForm(false);
+                setActiveFilter('all');
+            };
+
+            const handlePinSubmit = () => {
+                if (pinDraft === SUPPORT_ADMIN_PIN) {
+                    setSupportUnlocked(true);
+                    sessionStorage.setItem('supportUnlocked', 'true');
+                    setShowPinPrompt(false);
+                    setPinDraft('');
+                    setPinError('');
+                    setUserMode('support');
+                    setSelectedTicket(null);
+                    setShowCreateForm(false);
+                    setActiveFilter('all');
+                } else {
+                    setPinError('Incorrect PIN. Contact IT if you need Support access.');
+                }
+            };
+
+            // Current signed-in identity (drives "my tickets" filtering and ticket authorship)
+            const [currentUser, setCurrentUser] = useState(null);
+            const [loginDraft, setLoginDraft] = useState({ fullName: '', email: '' });
+            const [loginError, setLoginError] = useState('');
+
+            // The in-progress new-ticket form. This lives in the PARENT (not inside
+            // CreateTicketForm's own state) so that moving between form steps -
+            // which updates parent state like formStep - never wipes what the
+            // user already typed.
+            const [ticketDraft, setTicketDraft] = useState({
+                fullName: '',
+                department: '',
+                email: '',
+                contact: '',
+                category: '',
+                module: '',
+                subject: '',
+                description: '',
+                priority: 'Medium'
+            });
+
+            // Load current user identity
+            useEffect(() => {
+                const storedUser = localStorage.getItem('currentUser');
+                if (storedUser) {
+                    setCurrentUser(JSON.parse(storedUser));
+                }
+            }, []);
+
+            // Whenever we know who's signed in, prefill their name/email into new tickets
+            useEffect(() => {
+                if (currentUser) {
+                    setTicketDraft(prev => ({ ...prev, fullName: currentUser.fullName, email: currentUser.email }));
+                }
+            }, [currentUser]);
+
+            const handleLogin = () => {
+                const name = loginDraft.fullName.trim();
+                const email = loginDraft.email.trim();
+                const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+                if (!name || !emailValid) {
+                    setLoginError('Please enter your name and a valid email address.');
+                    return;
+                }
+                const user = { fullName: name, email };
+                localStorage.setItem('currentUser', JSON.stringify(user));
+                setCurrentUser(user);
+                setLoginError('');
+            };
+
+            const handleSwitchUser = () => {
+                localStorage.removeItem('currentUser');
+                sessionStorage.removeItem('supportUnlocked');
+                setSupportUnlocked(false);
+                setCurrentUser(null);
+                setSelectedTicket(null);
+                setShowCreateForm(false);
+                setLoginDraft({ fullName: '', email: '' });
+            };
+
+            // Load tickets
+            useEffect(() => {
+                const stored = localStorage.getItem('ticketsData');
+                if (stored) {
+                    setTickets(JSON.parse(stored));
+                }
+            }, []);
+
+            // Save tickets
+            useEffect(() => {
+                localStorage.setItem('ticketsData', JSON.stringify(tickets));
+                const unread = tickets.filter(t => t.status !== 'Closed' && t.unread).length;
+                setNotificationCount(unread);
+            }, [tickets]);
+
+            // Filter and sort
+            useEffect(() => {
+                let filtered = [...tickets];
+
+                if (userMode === 'user') {
+                    // Users only ever see their own tickets, matched by their signed-in email
+                    const myEmail = (currentUser?.email || '').toLowerCase();
+                    filtered = filtered.filter(t => (t.email || '').toLowerCase() === myEmail);
+                    if (activeFilter !== 'all') {
+                        filtered = filtered.filter(t => t.status.toLowerCase() === activeFilter.toLowerCase());
+                    }
+                } else {
+                    // Support agents see every ticket, regardless of who filed it
+                    if (activeFilter !== 'all') {
+                        filtered = filtered.filter(t => t.priority.toLowerCase() === activeFilter.toLowerCase());
+                    }
+                }
+
+                if (searchTerm) {
+                    filtered = filtered.filter(t =>
+                        t.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                        t.subject.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                        t.requesterName.toLowerCase().includes(searchTerm.toLowerCase())
+                    );
+                }
+
+                if (sortBy === 'recent') {
+                    filtered.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+                } else if (sortBy === 'priority') {
+                    const priorityOrder = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+                    filtered.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+                }
+
+                setFilteredTickets(filtered);
+            }, [tickets, activeFilter, searchTerm, sortBy, userMode, currentUser]);
+
+            const generateTicketNumber = () => {
+                return `TKT-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+            };
+
+            const createTicket = (formData) => {
+                const newTicket = {
+                    id: generateTicketNumber(),
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                    status: 'Open',
+                    priority: formData.priority,
+                    requesterName: formData.fullName,
+                    department: formData.department,
+                    email: formData.email,
+                    contact: formData.contact,
+                    category: formData.category,
+                    module: formData.module,
+                    subject: formData.subject,
+                    description: formData.description,
+                    conversations: [
+                        {
+                            id: Math.random().toString(36),
+                            type: 'submission',
+                            author: formData.fullName,
+                            role: 'user',
+                            message: formData.description,
+                            timestamp: new Date().toISOString(),
+                            read: true
+                        }
+                    ],
+                    unread: false
+                };
+
+                setTickets([...tickets, newTicket]);
+                setShowCreateForm(false);
+                setFormStep(1);
+                setFormError('');
+                setTicketDraft({
+                    fullName: currentUser?.fullName || '',
+                    department: '',
+                    email: currentUser?.email || '',
+                    contact: '',
+                    category: '',
+                    module: '',
+                    subject: '',
+                    description: '',
+                    priority: 'Medium'
+                });
+
+                const notifyResult = sendTicketNotifications(newTicket);
+                setNotifyBanner(
+                    notifyResult === 'sent'
+                        ? `Ticket ${newTicket.id} submitted. Emailed ${IT_SUPPORT_EMAIL} and ${newTicket.email}.`
+                        : `Ticket ${newTicket.id} submitted. Opened an email to ${IT_SUPPORT_EMAIL} - send it to notify IT (EmailJS isn't configured yet, see CONFIG at top of file for automatic sending).`
+                );
+                setTimeout(() => setNotifyBanner(''), 8000);
+            };
+
+            const addComment = (ticketId, message, isSupport = false) => {
+                const updated = tickets.map(t => {
+                    if (t.id === ticketId) {
+                        return {
+                            ...t,
+                            conversations: [
+                                ...t.conversations,
+                                {
+                                    id: Math.random().toString(36),
+                                    type: isSupport ? 'support' : 'user',
+                                    author: isSupport ? 'Support Team' : t.requesterName,
+                                    role: isSupport ? 'support' : 'user',
+                                    message: message,
+                                    timestamp: new Date().toISOString(),
+                                    read: false
+                                }
+                            ],
+                            updatedAt: new Date().toISOString()
+                        };
+                    }
+                    return t;
+                });
+                setTickets(updated);
+            };
+
+            const updateTicketStatus = (ticketId, newStatus) => {
+                const updated = tickets.map(t => {
+                    if (t.id === ticketId) {
+                        return { ...t, status: newStatus, updatedAt: new Date().toISOString() };
+                    }
+                    return t;
+                });
+                setTickets(updated);
+            };
+
+            const getStatusColor = (status) => {
+                const colors = {
+                    Open: '#ef4444',
+                    'In Progress': '#f59e0b',
+                    Resolved: '#3b82f6',
+                    Closed: '#10b981'
+                };
+                return colors[status] || '#6b7280';
+            };
+
+            const getPriorityColor = (priority) => {
+                const colors = {
+                    Critical: '#dc2626',
+                    High: '#ea580c',
+                    Medium: '#d97706',
+                    Low: '#6366f1'
+                };
+                return colors[priority] || '#6b7280';
+            };
+
+            const getDashboardStats = () => {
+                if (userMode === 'user') {
+                    const myEmail = (currentUser?.email || '').toLowerCase();
+                    const mine = tickets.filter(t => (t.email || '').toLowerCase() === myEmail);
+                    return {
+                        total: mine.length,
+                        open: mine.filter(t => t.status === 'Open').length,
+                        inProgress: mine.filter(t => t.status === 'In Progress').length,
+                        closed: mine.filter(t => t.status === 'Closed').length
+                    };
+                } else {
+                    const critical = tickets.filter(t => t.priority === 'Critical' && t.status !== 'Closed').length;
+                    const resolved = tickets.filter(t => t.status === 'Closed').length;
+                    const pending = tickets.filter(t => t.status !== 'Closed').length;
+                    return { critical, resolved, pending };
+                }
+            };
+
+            const stats = getDashboardStats();
+
+            const CreateTicketForm = () => {
+                // Data lives in the parent's `ticketDraft` state (not a local useState here).
+                // This is what fixes submission: this component gets a new function identity
+                // on every parent re-render, so if its data were local state it would reset
+                // every time formStep changed. Reading/writing the parent's state instead
+                // means the values survive step navigation.
+                const data = ticketDraft;
+                const updateData = (field, value) => {
+                    setTicketDraft({ ...ticketDraft, [field]: value });
+                };
+
+                const validateStep = (step) => {
+                    if (step === 1) {
+                        if (!data.fullName.trim()) return 'Please enter your full name.';
+                        if (!data.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email.trim())) {
+                            return 'Please enter a valid email address.';
+                        }
+                        if (!data.department) return 'Please select a department.';
+                    }
+                    if (step === 2) {
+                        if (!data.category) return 'Please select a category.';
+                        if (!data.module) return 'Please select an Oracle module.';
+                    }
+                    if (step === 3) {
+                        if (!data.subject.trim()) return 'Please enter a subject.';
+                        if (!data.description.trim()) return 'Please enter a description.';
+                    }
+                    return '';
+                };
+
+                const handleNext = () => {
+                    const err = validateStep(formStep);
+                    if (err) {
+                        setFormError(err);
+                        return;
+                    }
+                    setFormError('');
+                    if (formStep < 3) setFormStep(formStep + 1);
+                };
+
+                const handlePrev = () => {
+                    setFormError('');
+                    if (formStep > 1) setFormStep(formStep - 1);
+                };
+
+                const handleSubmit = () => {
+                    const err = validateStep(3) || validateStep(1) || validateStep(2);
+                    if (err) {
+                        setFormError(err);
+                        return;
+                    }
+                    setFormError('');
+                    createTicket(data);
+                };
+
+                return (
+                    <div style={{
+                        position: 'fixed',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        background: 'rgba(0, 0, 0, 0.5)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                        animation: 'fadeIn 0.3s ease'
+                    }}>
+                        <div style={{
+                            background: 'white',
+                            borderRadius: '16px',
+                            width: '90%',
+                            maxWidth: '600px',
+                            maxHeight: '90vh',
+                            overflow: 'auto',
+                            boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
+                            animation: 'slideUp 0.3s ease',
+                            padding: '2rem'
+                        }}>
+                            <div style={{ marginBottom: '2rem' }}>
+                                <div style={{ display: 'flex', gap: '8px', marginBottom: '1rem' }}>
+                                    {[1, 2, 3].map(step => (
+                                        <div key={step} style={{
+                                            flex: 1,
+                                            height: '4px',
+                                            background: step <= formStep ? '#3b82f6' : '#e5e7eb',
+                                            borderRadius: '2px',
+                                            transition: 'all 0.3s ease'
+                                        }} />
+                                    ))}
+                                </div>
+                                <h3 style={{ margin: '0 0 0.5rem', fontSize: '20px' }}>
+                                    {formStep === 1 && 'Your Information'}
+                                    {formStep === 2 && 'Ticket Details'}
+                                    {formStep === 3 && 'Issue Description'}
+                                </h3>
+                                <p style={{ margin: '0', color: '#6b7280', fontSize: '14px' }}>
+                                    Step {formStep} of 3
+                                </p>
+                            </div>
+
+                            <div style={{ marginBottom: '2rem' }}>
+                                {formStep === 1 && (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                                        <input
+                                            type="text"
+                                            placeholder="Full Name"
+                                            value={data.fullName}
+                                            onChange={(e) => updateData('fullName', e.target.value)}
+                                            style={{
+                                                padding: '12px 16px',
+                                                border: '2px solid #e5e7eb',
+                                                borderRadius: '8px',
+                                                fontSize: '14px',
+                                                outline: 'none'
+                                            }}
+                                        />
+                                        <select
+                                            value={data.department}
+                                            onChange={(e) => updateData('department', e.target.value)}
+                                            style={{
+                                                padding: '12px 16px',
+                                                border: '2px solid #e5e7eb',
+                                                borderRadius: '8px',
+                                                fontSize: '14px',
+                                                outline: 'none'
+                                            }}
+                                        >
+                                            <option value="">Select Department</option>
+                                            <option>Finance</option>
+                                            <option>HR</option>
+                                            <option>Procurement</option>
+                                            <option>IT</option>
+                                            <option>Administration</option>
+                                        </select>
+                                        <input
+                                            type="email"
+                                            placeholder="Email Address"
+                                            value={data.email}
+                                            onChange={(e) => updateData('email', e.target.value)}
+                                            readOnly={!!currentUser}
+                                            title={currentUser ? 'Tickets are filed under your signed-in email' : ''}
+                                            style={{
+                                                padding: '12px 16px',
+                                                border: '2px solid #e5e7eb',
+                                                borderRadius: '8px',
+                                                fontSize: '14px',
+                                                outline: 'none',
+                                                background: currentUser ? '#f3f4f6' : 'white',
+                                                color: currentUser ? '#6b7280' : '#111827'
+                                            }}
+                                        />
+                                        <input
+                                            type="tel"
+                                            placeholder="Contact Number (Optional)"
+                                            value={data.contact}
+                                            onChange={(e) => updateData('contact', e.target.value)}
+                                            style={{
+                                                padding: '12px 16px',
+                                                border: '2px solid #e5e7eb',
+                                                borderRadius: '8px',
+                                                fontSize: '14px',
+                                                outline: 'none'
+                                            }}
+                                        />
+                                    </div>
+                                )}
+
+                                {formStep === 2 && (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                                        <select
+                                            value={data.category}
+                                            onChange={(e) => updateData('category', e.target.value)}
+                                            style={{
+                                                padding: '12px 16px',
+                                                border: '2px solid #e5e7eb',
+                                                borderRadius: '8px',
+                                                fontSize: '14px',
+                                                outline: 'none'
+                                            }}
+                                        >
+                                            <option value="">Select Category</option>
+                                            <option>Incident</option>
+                                            <option>Service Request</option>
+                                            <option>Access Request</option>
+                                            <option>Enhancement Request</option>
+                                            <option>Integration Issue</option>
+                                        </select>
+                                        <select
+                                            value={data.module}
+                                            onChange={(e) => updateData('module', e.target.value)}
+                                            style={{
+                                                padding: '12px 16px',
+                                                border: '2px solid #e5e7eb',
+                                                borderRadius: '8px',
+                                                fontSize: '14px',
+                                                outline: 'none'
+                                            }}
+                                        >
+                                            <option value="">Select Oracle Module</option>
+                                            <option>General Ledger (GL)</option>
+                                            <option>Accounts Payable (AP)</option>
+                                            <option>Accounts Receivable (AR)</option>
+                                            <option>Procurement</option>
+                                            <option>Inventory</option>
+                                            <option>HCM</option>
+                                        </select>
+                                        <select
+                                            value={data.priority}
+                                            onChange={(e) => updateData('priority', e.target.value)}
+                                            style={{
+                                                padding: '12px 16px',
+                                                border: '2px solid #e5e7eb',
+                                                borderRadius: '8px',
+                                                fontSize: '14px',
+                                                outline: 'none'
+                                            }}
+                                        >
+                                            <option>Critical</option>
+                                            <option>High</option>
+                                            <option>Medium</option>
+                                            <option>Low</option>
+                                        </select>
+                                    </div>
+                                )}
+
+                                {formStep === 3 && (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                                        <input
+                                            type="text"
+                                            placeholder="Issue Subject"
+                                            value={data.subject}
+                                            onChange={(e) => updateData('subject', e.target.value)}
+                                            style={{
+                                                padding: '12px 16px',
+                                                border: '2px solid #e5e7eb',
+                                                borderRadius: '8px',
+                                                fontSize: '14px',
+                                                outline: 'none'
+                                            }}
+                                        />
+                                        <textarea
+                                            placeholder="Detailed Description..."
+                                            value={data.description}
+                                            onChange={(e) => updateData('description', e.target.value)}
+                                            style={{
+                                                padding: '12px 16px',
+                                                border: '2px solid #e5e7eb',
+                                                borderRadius: '8px',
+                                                fontSize: '14px',
+                                                minHeight: '150px',
+                                                fontFamily: 'inherit',
+                                                outline: 'none',
+                                                resize: 'vertical'
+                                            }}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+
+                            {formError && (
+                                <div style={{
+                                    background: '#fef2f2',
+                                    border: '1px solid #fecaca',
+                                    color: '#b91c1c',
+                                    padding: '10px 14px',
+                                    borderRadius: '8px',
+                                    fontSize: '13px',
+                                    marginBottom: '1rem'
+                                }}>
+                                    ⚠️ {formError}
+                                </div>
+                            )}
+                            <div style={{ display: 'flex', gap: '12px' }}>
+                                <button
+                                    onClick={handlePrev}
+                                    disabled={formStep === 1}
+                                    style={{
+                                        flex: 1,
+                                        padding: '12px',
+                                        border: '2px solid #e5e7eb',
+                                        background: formStep === 1 ? '#f3f4f6' : 'white',
+                                        color: formStep === 1 ? '#9ca3af' : '#333',
+                                        borderRadius: '8px',
+                                        cursor: formStep === 1 ? 'not-allowed' : 'pointer',
+                                        fontSize: '14px',
+                                        fontWeight: '600',
+                                        transition: 'all 0.3s'
+                                    }}
+                                >
+                                    Previous
+                                </button>
+                                {formStep < 3 ? (
+                                    <button
+                                        onClick={handleNext}
+                                        style={{
+                                            flex: 1,
+                                            padding: '12px',
+                                            border: 'none',
+                                            background: '#3b82f6',
+                                            color: 'white',
+                                            borderRadius: '8px',
+                                            cursor: 'pointer',
+                                            fontSize: '14px',
+                                            fontWeight: '600',
+                                            transition: 'all 0.3s'
+                                        }}
+                                    >
+                                        Next
+                                    </button>
+                                ) : (
+                                    <button
+                                        onClick={handleSubmit}
+                                        style={{
+                                            flex: 1,
+                                            padding: '12px',
+                                            border: 'none',
+                                            background: '#10b981',
+                                            color: 'white',
+                                            borderRadius: '8px',
+                                            cursor: 'pointer',
+                                            fontSize: '14px',
+                                            fontWeight: '600',
+                                            transition: 'all 0.3s'
+                                        }}
+                                    >
+                                        Submit Ticket
+                                    </button>
+                                )}
+                                <button
+                                    onClick={() => {
+                                        setShowCreateForm(false);
+                                        setFormStep(1);
+                                        setFormError('');
+                                    }}
+                                    style={{
+                                        padding: '12px 20px',
+                                        border: 'none',
+                                        background: '#f3f4f6',
+                                        color: '#666',
+                                        borderRadius: '8px',
+                                        cursor: 'pointer',
+                                        fontSize: '14px',
+                                        fontWeight: '600'
+                                    }}
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            const TicketDetail = ({ ticket }) => {
+                const [comment, setComment] = useState('');
+                const [selectedStatus, setSelectedStatus] = useState(ticket.status);
+                const messagesEndRef = useRef(null);
+
+                useEffect(() => {
+                    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                }, [ticket.conversations]);
+
+                return (
+                    <div style={{
+                        animation: 'slideInRight 0.3s ease',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        height: '100vh',
+                        background: '#f9fafb'
+                    }}>
+                        <div style={{
+                            background: 'white',
+                            borderBottom: '1px solid #e5e7eb',
+                            padding: '1.5rem',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'start',
+                            gap: '1rem'
+                        }}>
+                            <div>
+                                <h2 style={{ margin: '0 0 0.5rem', fontSize: '24px' }}>{ticket.id}</h2>
+                                <p style={{ margin: '0', color: '#6b7280', fontSize: '16px' }}>{ticket.subject}</p>
+                            </div>
+                            <button
+                                onClick={() => setSelectedTicket(null)}
+                                style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    fontSize: '24px',
+                                    cursor: 'pointer',
+                                    color: '#9ca3af'
+                                }}
+                            >
+                                ✕
+                            </button>
+                        </div>
+
+                        <div style={{
+                            background: 'white',
+                            borderBottom: '1px solid #e5e7eb',
+                            padding: '1.5rem',
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                            gap: '1.5rem'
+                        }}>
+                            <div>
+                                <p style={{ margin: '0 0 0.5rem', color: '#6b7280', fontSize: '12px', fontWeight: '600' }}>STATUS</p>
+                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                    <span style={{
+                                        display: 'inline-block',
+                                        width: '8px',
+                                        height: '8px',
+                                        background: getStatusColor(ticket.status),
+                                        borderRadius: '50%'
+                                    }} />
+                                    {userMode === 'support' ? (
+                                        <select
+                                            value={selectedStatus}
+                                            onChange={(e) => {
+                                                setSelectedStatus(e.target.value);
+                                                updateTicketStatus(ticket.id, e.target.value);
+                                            }}
+                                            style={{
+                                                padding: '6px 12px',
+                                                border: '1px solid #e5e7eb',
+                                                borderRadius: '6px',
+                                                fontSize: '14px',
+                                                fontWeight: '600',
+                                                cursor: 'pointer'
+                                            }}
+                                        >
+                                            <option>Open</option>
+                                            <option>In Progress</option>
+                                            <option>Resolved</option>
+                                            <option>Closed</option>
+                                        </select>
+                                    ) : (
+                                        <span style={{ fontWeight: '600' }}>{ticket.status}</span>
+                                    )}
+                                </div>
+                            </div>
+                            <div>
+                                <p style={{ margin: '0 0 0.5rem', color: '#6b7280', fontSize: '12px', fontWeight: '600' }}>PRIORITY</p>
+                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                    <span style={{
+                                        display: 'inline-block',
+                                        width: '8px',
+                                        height: '8px',
+                                        background: getPriorityColor(ticket.priority),
+                                        borderRadius: '50%'
+                                    }} />
+                                    <span style={{ fontWeight: '600' }}>{ticket.priority}</span>
+                                </div>
+                            </div>
+                            <div>
+                                <p style={{ margin: '0 0 0.5rem', color: '#6b7280', fontSize: '12px', fontWeight: '600' }}>CATEGORY</p>
+                                <span style={{ fontWeight: '600' }}>{ticket.category}</span>
+                            </div>
+                            <div>
+                                <p style={{ margin: '0 0 0.5rem', color: '#6b7280', fontSize: '12px', fontWeight: '600' }}>CREATED</p>
+                                <span style={{ fontWeight: '600' }}>{new Date(ticket.createdAt).toLocaleDateString()}</span>
+                            </div>
+                        </div>
+
+                        {userMode === 'support' && (
+                            <div style={{
+                                background: 'white',
+                                borderBottom: '1px solid #e5e7eb',
+                                padding: '1.5rem',
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                                gap: '1.5rem'
+                            }}>
+                                <div>
+                                    <p style={{ margin: '0 0 0.5rem', color: '#6b7280', fontSize: '12px', fontWeight: '600' }}>NAME</p>
+                                    <span style={{ fontWeight: '600' }}>{ticket.requesterName}</span>
+                                </div>
+                                <div>
+                                    <p style={{ margin: '0 0 0.5rem', color: '#6b7280', fontSize: '12px', fontWeight: '600' }}>EMAIL</p>
+                                    <span style={{ fontWeight: '600' }}>{ticket.email}</span>
+                                </div>
+                                <div>
+                                    <p style={{ margin: '0 0 0.5rem', color: '#6b7280', fontSize: '12px', fontWeight: '600' }}>DEPARTMENT</p>
+                                    <span style={{ fontWeight: '600' }}>{ticket.department}</span>
+                                </div>
+                                <div>
+                                    <p style={{ margin: '0 0 0.5rem', color: '#6b7280', fontSize: '12px', fontWeight: '600' }}>CONTACT</p>
+                                    <span style={{ fontWeight: '600' }}>{ticket.contact || 'N/A'}</span>
+                                </div>
+                            </div>
+                        )}
+
+                        <div style={{
+                            flex: 1,
+                            overflow: 'auto',
+                            padding: '1.5rem',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '1rem',
+                            background: '#f9fafb'
+                        }}>
+                            {ticket.conversations.map((msg, idx) => (
+                                <div key={idx} style={{
+                                    background: msg.role === 'support' ? '#dbeafe' : '#f3f4f6',
+                                    padding: '1rem',
+                                    borderRadius: '12px',
+                                    animation: 'slideUp 0.3s ease',
+                                    marginLeft: msg.role === 'support' ? '2rem' : '0',
+                                    marginRight: msg.role === 'user' ? '2rem' : '0'
+                                }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                                        <span style={{ fontWeight: '600', fontSize: '14px' }}>
+                                            {msg.author}
+                                            {msg.role === 'support' && (
+                                                <span style={{
+                                                    marginLeft: '8px',
+                                                    background: '#0ea5e9',
+                                                    color: 'white',
+                                                    padding: '2px 8px',
+                                                    borderRadius: '4px',
+                                                    fontSize: '11px'
+                                                }}>
+                                                    SUPPORT
+                                                </span>
+                                            )}
+                                        </span>
+                                        <span style={{ fontSize: '12px', color: '#6b7280' }}>
+                                            {new Date(msg.timestamp).toLocaleTimeString()}
+                                        </span>
+                                    </div>
+                                    <p style={{ margin: '0.5rem 0 0', color: '#1f2937', fontSize: '14px', lineHeight: '1.6' }}>
+                                        {msg.message}
+                                    </p>
+                                </div>
+                            ))}
+                            <div ref={messagesEndRef} />
+                        </div>
+
+                        {ticket.status !== 'Closed' && (
+                            <div style={{
+                                background: 'white',
+                                borderTop: '1px solid #e5e7eb',
+                                padding: '1.5rem',
+                                display: 'flex',
+                                gap: '12px'
+                            }}>
+                                <textarea
+                                    value={comment}
+                                    onChange={(e) => setComment(e.target.value)}
+                                    placeholder={`Add ${userMode === 'support' ? 'support response' : 'response'}...`}
+                                    style={{
+                                        flex: 1,
+                                        padding: '12px 16px',
+                                        border: '2px solid #e5e7eb',
+                                        borderRadius: '8px',
+                                        fontSize: '14px',
+                                        fontFamily: 'inherit',
+                                        outline: 'none',
+                                        resize: 'none',
+                                        maxHeight: '120px'
+                                    }}
+                                />
+                                <button
+                                    onClick={() => {
+                                        if (comment.trim()) {
+                                            addComment(ticket.id, comment, userMode === 'support');
+                                            setComment('');
+                                        }
+                                    }}
+                                    style={{
+                                        padding: '12px 20px',
+                                        background: '#3b82f6',
+                                        color: 'white',
+                                        border: 'none',
+                                        borderRadius: '8px',
+                                        cursor: 'pointer',
+                                        fontWeight: '600',
+                                        transition: 'all 0.3s'
+                                    }}
+                                >
+                                    Send
+                                </button>
+                                {userMode === 'user' && ticket.status === 'Resolved' && (
+                                    <button
+                                        onClick={() => updateTicketStatus(ticket.id, 'Closed')}
+                                        style={{
+                                            padding: '12px 20px',
+                                            background: '#10b981',
+                                            color: 'white',
+                                            border: 'none',
+                                            borderRadius: '8px',
+                                            cursor: 'pointer',
+                                            fontWeight: '600'
+                                        }}
+                                    >
+                                        Close
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            if (!currentUser) {
+                return (
+                    <div style={{
+                        height: '100vh',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+                    }}>
+                        <div style={{
+                            background: 'white',
+                            borderRadius: '16px',
+                            padding: '2.5rem',
+                            width: '90%',
+                            maxWidth: '400px',
+                            boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
+                            animation: 'slideUp 0.3s ease'
+                        }}>
+                            <h1 style={{ margin: '0 0 0.25rem', fontSize: '22px' }}>🎟️ Oracle Support</h1>
+                            <p style={{ margin: '0 0 1.5rem', color: '#6b7280', fontSize: '14px' }}>
+                                Sign in with your name and email to view and submit your tickets.
+                            </p>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                                <input
+                                    type="text"
+                                    placeholder="Full Name"
+                                    value={loginDraft.fullName}
+                                    onChange={(e) => setLoginDraft({ ...loginDraft, fullName: e.target.value })}
+                                    style={{
+                                        padding: '12px 16px',
+                                        border: '2px solid #e5e7eb',
+                                        borderRadius: '8px',
+                                        fontSize: '14px',
+                                        outline: 'none'
+                                    }}
+                                />
+                                <input
+                                    type="email"
+                                    placeholder="Email Address"
+                                    value={loginDraft.email}
+                                    onChange={(e) => setLoginDraft({ ...loginDraft, email: e.target.value })}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') handleLogin(); }}
+                                    style={{
+                                        padding: '12px 16px',
+                                        border: '2px solid #e5e7eb',
+                                        borderRadius: '8px',
+                                        fontSize: '14px',
+                                        outline: 'none'
+                                    }}
+                                />
+                                {loginError && (
+                                    <div style={{
+                                        background: '#fef2f2',
+                                        border: '1px solid #fecaca',
+                                        color: '#b91c1c',
+                                        padding: '10px 14px',
+                                        borderRadius: '8px',
+                                        fontSize: '13px'
+                                    }}>
+                                        ⚠️ {loginError}
+                                    </div>
+                                )}
+                                <button
+                                    onClick={handleLogin}
+                                    style={{
+                                        padding: '12px',
+                                        border: 'none',
+                                        background: '#667eea',
+                                        color: 'white',
+                                        borderRadius: '8px',
+                                        cursor: 'pointer',
+                                        fontSize: '14px',
+                                        fontWeight: '600'
+                                    }}
+                                >
+                                    Continue
+                                </button>
+                                <p style={{ margin: 0, color: '#9ca3af', fontSize: '12px' }}>
+                                    Support agents can sign in with any email — switch to Support mode
+                                    after signing in to see every ticket, not just your own.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div style={{
+                    display: 'flex',
+                    height: '100vh',
+                    background: '#f9fafb',
+                    overflow: 'hidden'
+                }}>
+                    {/* Sidebar */}
+                    <div style={{
+                        width: '280px',
+                        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                        color: 'white',
+                        padding: '2rem 1.5rem',
+                        overflow: 'auto',
+                        display: 'flex',
+                        flexDirection: 'column'
+                    }}>
+                        <div style={{ marginBottom: '1.5rem' }}>
+                            <h1 style={{ margin: '0 0 0.5rem', fontSize: '24px', fontWeight: '700' }}>
+                                🎟️ Support
+                            </h1>
+                            <p style={{ margin: '0', opacity: 0.9, fontSize: '12px' }}>Ticket Management</p>
+                        </div>
+
+                        <div style={{
+                            background: 'rgba(255, 255, 255, 0.12)',
+                            borderRadius: '8px',
+                            padding: '10px 12px',
+                            marginBottom: '1rem',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: '8px'
+                        }}>
+                            <div style={{ minWidth: 0 }}>
+                                <p style={{ margin: '0 0 2px', fontSize: '13px', fontWeight: '600', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                    {currentUser.fullName}
+                                </p>
+                                <p style={{ margin: 0, fontSize: '11px', opacity: 0.8, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                    {currentUser.email}
+                                </p>
+                            </div>
+                            <button
+                                onClick={handleSwitchUser}
+                                title="Sign out / switch user"
+                                style={{
+                                    background: 'rgba(255,255,255,0.2)',
+                                    border: 'none',
+                                    color: 'white',
+                                    borderRadius: '6px',
+                                    padding: '6px 10px',
+                                    fontSize: '11px',
+                                    fontWeight: '600',
+                                    cursor: 'pointer',
+                                    flexShrink: 0
+                                }}
+                            >
+                                Switch
+                            </button>
+                        </div>
+
+                        <div style={{
+                            background: 'rgba(255, 255, 255, 0.2)',
+                            borderRadius: '8px',
+                            padding: '8px',
+                            marginBottom: '2rem',
+                            display: 'grid',
+                            gridTemplateColumns: '1fr 1fr',
+                            gap: '8px'
+                        }}>
+                            {['user', 'support'].map(mode => (
+                                <button
+                                    key={mode}
+                                    onClick={() => handleModeSelect(mode)}
+                                    style={{
+                                        padding: '8px 12px',
+                                        background: userMode === mode ? 'white' : 'transparent',
+                                        color: userMode === mode ? '#667eea' : 'white',
+                                        border: 'none',
+                                        borderRadius: '6px',
+                                        cursor: 'pointer',
+                                        fontSize: '13px',
+                                        fontWeight: '600',
+                                        transition: 'all 0.3s'
+                                    }}
+                                >
+                                    {mode === 'user' ? '👤 User' : (supportUnlocked ? '🎧 Support' : '🔒 Support')}
+                                </button>
+                            ))}
+                        </div>
+
+                        <div style={{ marginBottom: '2rem' }}>
+                            <p style={{ margin: '0 0 1rem', fontSize: '12px', fontWeight: '600', opacity: 0.9 }}>STATS</p>
+                            {userMode === 'user' ? (
+                                <div style={{ fontSize: '13px' }}>
+                                    <div style={{ marginBottom: '12px' }}>
+                                        <p style={{ margin: '0 0 4px', opacity: 0.9 }}>Total</p>
+                                        <p style={{ margin: '0', fontSize: '24px', fontWeight: '700' }}>{stats.total}</p>
+                                    </div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                        <div style={{ background: 'rgba(255, 255, 255, 0.1)', padding: '8px', borderRadius: '6px' }}>
+                                            <p style={{ margin: '0', opacity: 0.8, fontSize: '11px' }}>Open</p>
+                                            <p style={{ margin: '0', fontSize: '18px', fontWeight: '600' }}>{stats.open}</p>
+                                        </div>
+                                        <div style={{ background: 'rgba(255, 255, 255, 0.1)', padding: '8px', borderRadius: '6px' }}>
+                                            <p style={{ margin: '0', opacity: 0.8, fontSize: '11px' }}>Progress</p>
+                                            <p style={{ margin: '0', fontSize: '18px', fontWeight: '600' }}>{stats.inProgress}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div style={{ fontSize: '13px' }}>
+                                    <div style={{ marginBottom: '12px' }}>
+                                        <p style={{ margin: '0 0 4px', opacity: 0.9 }}>Critical</p>
+                                        <p style={{ margin: '0', fontSize: '24px', fontWeight: '700', color: '#fca5a5' }}>{stats.critical}</p>
+                                    </div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                        <div style={{ background: 'rgba(255, 255, 255, 0.1)', padding: '8px', borderRadius: '6px' }}>
+                                            <p style={{ margin: '0', opacity: 0.8, fontSize: '11px' }}>Pending</p>
+                                            <p style={{ margin: '0', fontSize: '18px', fontWeight: '600' }}>{stats.pending}</p>
+                                        </div>
+                                        <div style={{ background: 'rgba(255, 255, 255, 0.1)', padding: '8px', borderRadius: '6px' }}>
+                                            <p style={{ margin: '0', opacity: 0.8, fontSize: '11px' }}>Resolved</p>
+                                            <p style={{ margin: '0', fontSize: '18px', fontWeight: '600' }}>{stats.resolved}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {userMode === 'user' && (
+                            <button
+                                onClick={() => { setFormError(''); setShowCreateForm(true); }}
+                                style={{
+                                    padding: '12px 16px',
+                                    background: 'white',
+                                    color: '#667eea',
+                                    border: 'none',
+                                    borderRadius: '8px',
+                                    cursor: 'pointer',
+                                    fontWeight: '600',
+                                    transition: 'all 0.3s',
+                                    width: '100%',
+                                    marginBottom: '2rem'
+                                }}
+                            >
+                                + New Ticket
+                            </button>
+                        )}
+
+                        <div style={{ marginBottom: '2rem' }}>
+                            <p style={{ margin: '0 0 1rem', fontSize: '12px', fontWeight: '600', opacity: 0.9 }}>FILTERS</p>
+                            {userMode === 'user' ? (
+                                ['all', 'Open', 'In Progress', 'Resolved', 'Closed'].map(f => (
+                                    <button
+                                        key={f}
+                                        onClick={() => setActiveFilter(f)}
+                                        style={{
+                                            display: 'block',
+                                            width: '100%',
+                                            padding: '8px 12px',
+                                            background: activeFilter === f ? 'rgba(255, 255, 255, 0.2)' : 'transparent',
+                                            color: 'white',
+                                            border: 'none',
+                                            borderRadius: '6px',
+                                            cursor: 'pointer',
+                                            fontSize: '14px',
+                                            textAlign: 'left',
+                                            marginBottom: '4px',
+                                            transition: 'all 0.3s'
+                                        }}
+                                    >
+                                        {f === 'all' ? '📋' : f === 'Open' ? '🔴' : f === 'In Progress' ? '🟠' : f === 'Resolved' ? '🔵' : '🟢'} {f}
+                                    </button>
+                                ))
+                            ) : (
+                                ['all', 'Critical', 'High', 'Medium', 'Low'].map(f => (
+                                    <button
+                                        key={f}
+                                        onClick={() => setActiveFilter(f)}
+                                        style={{
+                                            display: 'block',
+                                            width: '100%',
+                                            padding: '8px 12px',
+                                            background: activeFilter === f ? 'rgba(255, 255, 255, 0.2)' : 'transparent',
+                                            color: 'white',
+                                            border: 'none',
+                                            borderRadius: '6px',
+                                            cursor: 'pointer',
+                                            fontSize: '14px',
+                                            textAlign: 'left',
+                                            marginBottom: '4px',
+                                            transition: 'all 0.3s'
+                                        }}
+                                    >
+                                        {f === 'all' ? '📋' : f === 'Critical' ? '🔴' : f === 'High' ? '🟠' : f === 'Medium' ? '🟡' : '🔵'} {f}
+                                    </button>
+                                ))
+                            )}
+                        </div>
+
+                        <div style={{ marginTop: 'auto', paddingTop: '1rem', borderTop: '1px solid rgba(255, 255, 255, 0.2)', fontSize: '12px', opacity: 0.7 }}>
+                            <p style={{ margin: '0' }}>© 2024 Oracle Support</p>
+                        </div>
+                    </div>
+
+                    {/* Main Content */}
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                        {selectedTicket ? (
+                            <TicketDetail ticket={selectedTicket} />
+                        ) : (
+                            <>
+                                <div style={{
+                                    background: 'white',
+                                    borderBottom: '1px solid #e5e7eb',
+                                    padding: '1.5rem',
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    gap: '1rem'
+                                }}>
+                                    <div style={{ flex: 1, display: 'flex', gap: '12px' }}>
+                                        <input
+                                            type="text"
+                                            placeholder="Search tickets..."
+                                            value={searchTerm}
+                                            onChange={(e) => setSearchTerm(e.target.value)}
+                                            style={{
+                                                flex: 1,
+                                                padding: '10px 16px',
+                                                border: '2px solid #e5e7eb',
+                                                borderRadius: '8px',
+                                                fontSize: '14px',
+                                                outline: 'none'
+                                            }}
+                                        />
+                                        <select
+                                            value={sortBy}
+                                            onChange={(e) => setSortBy(e.target.value)}
+                                            style={{
+                                                padding: '10px 16px',
+                                                border: '2px solid #e5e7eb',
+                                                borderRadius: '8px',
+                                                fontSize: '14px',
+                                                outline: 'none',
+                                                cursor: 'pointer'
+                                            }}
+                                        >
+                                            <option value="recent">Recent</option>
+                                            <option value="priority">Priority</option>
+                                        </select>
+                                    </div>
+                                    {notificationCount > 0 && (
+                                        <div style={{
+                                            background: '#ef4444',
+                                            color: 'white',
+                                            padding: '8px 12px',
+                                            borderRadius: '20px',
+                                            fontSize: '12px',
+                                            fontWeight: '600'
+                                        }}>
+                                            {notificationCount} New
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div style={{
+                                    flex: 1,
+                                    overflow: 'auto',
+                                    padding: '1.5rem'
+                                }}>
+                                    {filteredTickets.length === 0 ? (
+                                        <div style={{
+                                            textAlign: 'center',
+                                            padding: '3rem',
+                                            color: '#6b7280'
+                                        }}>
+                                            <p style={{ fontSize: '16px', margin: '0' }}>No tickets found</p>
+                                        </div>
+                                    ) : (
+                                        <div style={{ display: 'grid', gap: '12px' }}>
+                                            {filteredTickets.map(ticket => (
+                                                <div
+                                                    key={ticket.id}
+                                                    onClick={() => setSelectedTicket(ticket)}
+                                                    style={{
+                                                        background: 'white',
+                                                        border: '1px solid #e5e7eb',
+                                                        borderLeft: `4px solid ${getStatusColor(ticket.status)}`,
+                                                        borderRadius: '12px',
+                                                        padding: '1.5rem',
+                                                        cursor: 'pointer',
+                                                        transition: 'all 0.3s',
+                                                        animation: 'slideUp 0.3s ease'
+                                                    }}
+                                                    onMouseEnter={(e) => {
+                                                        e.currentTarget.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.1)';
+                                                        e.currentTarget.style.transform = 'translateY(-2px)';
+                                                    }}
+                                                    onMouseLeave={(e) => {
+                                                        e.currentTarget.style.boxShadow = 'none';
+                                                        e.currentTarget.style.transform = 'translateY(0)';
+                                                    }}
+                                                >
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '1rem' }}>
+                                                        <div style={{ flex: 1 }}>
+                                                            <h3 style={{ margin: '0 0 0.5rem', fontSize: '16px', fontWeight: '600' }}>{ticket.id}</h3>
+                                                            <p style={{ margin: '0', color: '#6b7280', fontSize: '14px' }}>{ticket.subject}</p>
+                                                        </div>
+                                                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                                            <span style={{
+                                                                padding: '4px 12px',
+                                                                background: getStatusColor(ticket.status),
+                                                                color: 'white',
+                                                                borderRadius: '6px',
+                                                                fontSize: '12px',
+                                                                fontWeight: '600'
+                                                            }}>
+                                                                {ticket.status}
+                                                            </span>
+                                                            <span style={{
+                                                                padding: '4px 12px',
+                                                                background: getPriorityColor(ticket.priority),
+                                                                color: 'white',
+                                                                borderRadius: '6px',
+                                                                fontSize: '12px',
+                                                                fontWeight: '600'
+                                                            }}>
+                                                                {ticket.priority}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                    <div style={{
+                                                        display: 'grid',
+                                                        gridTemplateColumns: 'auto auto auto auto 1fr auto',
+                                                        gap: '1.5rem',
+                                                        fontSize: '13px',
+                                                        color: '#6b7280'
+                                                    }}>
+                                                        <div>
+                                                            <span>📂 {ticket.category}</span>
+                                                        </div>
+                                                        {userMode === 'support' && (
+                                                            <div>
+                                                                <span>👤 {ticket.requesterName}</span>
+                                                            </div>
+                                                        )}
+                                                        <div>
+                                                            <span>💬 {ticket.conversations.length} msgs</span>
+                                                        </div>
+                                                        <div style={{ textAlign: 'right' }}>
+                                                            <span>{new Date(ticket.createdAt).toLocaleDateString()}</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </>
+                        )}
+                    </div>
+
+                    {showCreateForm && <CreateTicketForm />}
+
+                    {showPinPrompt && (
+                        <div style={{
+                            position: 'fixed',
+                            top: 0, left: 0, right: 0, bottom: 0,
+                            background: 'rgba(0, 0, 0, 0.5)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            zIndex: 1000,
+                            animation: 'fadeIn 0.3s ease'
+                        }}>
+                            <div style={{
+                                background: 'white',
+                                borderRadius: '16px',
+                                width: '90%',
+                                maxWidth: '360px',
+                                boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
+                                animation: 'slideUp 0.3s ease',
+                                padding: '2rem'
+                            }}>
+                                <h3 style={{ margin: '0 0 0.5rem', fontSize: '18px' }}>🔒 Support Access</h3>
+                                <p style={{ margin: '0 0 1rem', color: '#6b7280', fontSize: '13px' }}>
+                                    Enter the admin PIN to view every ticket in Support mode.
+                                </p>
+                                <input
+                                    type="abc123"
+                                    placeholder="Admin PIN"
+                                    value={pinDraft}
+                                    autoFocus
+                                    onChange={(e) => setPinDraft(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') handlePinSubmit(); }}
+                                    style={{
+                                        width: '100%',
+                                        padding: '12px 16px',
+                                        border: '2px solid #e5e7eb',
+                                        borderRadius: '8px',
+                                        fontSize: '14px',
+                                        outline: 'none',
+                                        marginBottom: '1rem',
+                                        boxSizing: 'border-box'
+                                    }}
+                                />
+                                {pinError && (
+                                    <div style={{
+                                        background: '#fef2f2',
+                                        border: '1px solid #fecaca',
+                                        color: '#b91c1c',
+                                        padding: '10px 14px',
+                                        borderRadius: '8px',
+                                        fontSize: '13px',
+                                        marginBottom: '1rem'
+                                    }}>
+                                        ⚠️ {pinError}
+                                    </div>
+                                )}
+                                <div style={{ display: 'flex', gap: '12px' }}>
+                                    <button
+                                        onClick={() => { setShowPinPrompt(false); setPinDraft(''); setPinError(''); }}
+                                        style={{
+                                            flex: 1,
+                                            padding: '12px',
+                                            border: '2px solid #e5e7eb',
+                                            background: 'white',
+                                            color: '#333',
+                                            borderRadius: '8px',
+                                            cursor: 'pointer',
+                                            fontSize: '14px',
+                                            fontWeight: '600'
+                                        }}
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        onClick={handlePinSubmit}
+                                        style={{
+                                            flex: 1,
+                                            padding: '12px',
+                                            border: 'none',
+                                            background: '#667eea',
+                                            color: 'white',
+                                            borderRadius: '8px',
+                                            cursor: 'pointer',
+                                            fontSize: '14px',
+                                            fontWeight: '600'
+                                        }}
+                                    >
+                                        Unlock
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {notifyBanner && (
+                        <div style={{
+                            position: 'fixed',
+                            bottom: '1.5rem',
+                            right: '1.5rem',
+                            maxWidth: '360px',
+                            background: '#111827',
+                            color: 'white',
+                            padding: '14px 18px',
+                            borderRadius: '10px',
+                            fontSize: '13px',
+                            lineHeight: '1.5',
+                            boxShadow: '0 10px 30px rgba(0,0,0,0.3)',
+                            zIndex: 2000,
+                            animation: 'slideUp 0.3s ease'
+                        }}>
+                            ✉️ {notifyBanner}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<AdvancedTicketingSystem />, document.getElementById('root'));
+    </script>
+</body>
+</html>
